@@ -1,0 +1,92 @@
+version: '3.8'
+
+services:
+
+  # --------------------------------------------------------------
+  # BASE DE DATOS DE ms-productos
+  # --------------------------------------------------------------
+  db-productos:
+    image: mysql:8.0
+    container_name: db-productos
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: productos_db
+    volumes:
+      - vol-db-productos:/var/lib/mysql
+    networks:
+      - backend-net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --------------------------------------------------------------
+  # BASE DE DATOS DE ms-pedidos
+  # --------------------------------------------------------------
+  db-pedidos:
+    image: mysql:8.0
+    container_name: db-pedidos
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: pedidos_db
+    volumes:
+      - vol-db-pedidos:/var/lib/mysql
+    networks:
+      - backend-net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --------------------------------------------------------------
+  # MICROSERVICIO PROVEEDOR (ms-productos)
+  # --------------------------------------------------------------
+  ms-productos:
+    build: ./ms-productos
+    container_name: ms-productos
+    ports:
+      - "8081:8081"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:mysql://db-productos:3306/productos_db?useSSL=false&allowPublicKeyRetrieval=true
+      - SPRING_DATASOURCE_USERNAME=root
+      - SPRING_DATASOURCE_PASSWORD=root
+    depends_on:
+      db-productos:
+        condition: service_healthy
+    networks:
+      - backend-net
+
+  # --------------------------------------------------------------
+  # MICROSERVICIO CONSUMIDOR (ms-pedidos)
+  # --------------------------------------------------------------
+  ms-pedidos:
+    build: ./ms-pedidos
+    container_name: ms-pedidos
+    ports:
+      - "8082:8082"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:mysql://db-pedidos:3306/pedidos_db?useSSL=false&allowPublicKeyRetrieval=true
+      - SPRING_DATASOURCE_USERNAME=root
+      - SPRING_DATASOURCE_PASSWORD=root
+      # URL del servicio proveedor inyectada para Feign Client
+      - PRODUCTOS_URL=http://ms-productos:8081
+    depends_on:
+      db-pedidos:
+        condition: service_healthy
+      ms-productos:
+        condition: service_started
+    networks:
+      - backend-net
+
+# --------------------------------------------------------------
+# VOLÚMENES Y REDES
+# --------------------------------------------------------------
+volumes:
+  vol-db-productos:
+  vol-db-pedidos:
+
+networks:
+  backend-net:
+    driver: bridge
