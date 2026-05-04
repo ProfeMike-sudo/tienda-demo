@@ -67,33 +67,197 @@ El ecosistema completo corre dentro de una red Docker llamada `backend-net`. Son
 
 ## 3. Instrucciones de ejecucion
 
-### Pre-requisitos
-- Docker Desktop instalado y corriendo
-- Puerto 8081 y 8082 libres en el host
+Esta seccion cubre el proceso completo: desde conectarse a la instancia EC2 por primera vez hasta tener los microservicios respondiendo. Sigan los pasos en orden.
 
-### Levantar todo el sistema
+---
+
+### Paso 1 — Abrir los puertos en AWS (Security Group)
+
+Antes de correr cualquier cosa, la instancia EC2 debe tener los puertos abiertos. Si no hacen esto, las peticiones de Postman no llegaran aunque los contenedores esten corriendo.
+
+1. Ingresar a la consola de AWS: **EC2 → Instances → seleccionar su instancia**
+2. En la pestana **Security**, hacer clic en el nombre del Security Group
+3. Ir a la pestana **Inbound rules → Edit inbound rules**
+4. Agregar las siguientes reglas:
+
+| Type | Protocol | Port range | Source | Para que sirve |
+|---|---|---|---|---|
+| Custom TCP | TCP | 8081 | 0.0.0.0/0 | ms-productos |
+| Custom TCP | TCP | 8082 | 0.0.0.0/0 | ms-pedidos |
+| SSH | TCP | 22 | 0.0.0.0/0 | Conexion SSH (ya deberia estar) |
+
+5. Hacer clic en **Save rules**
+
+> Si en el proyecto de ustedes usan puertos distintos (por ejemplo 8083, 8084), reemplacen los numeros segun corresponda. El principio es el mismo: un puerto por microservicio.
+
+---
+
+### Paso 2 — Conectarse a la instancia EC2 por SSH
+
+Desde la terminal de su computador (o desde la consola de AWS con "Connect"):
 
 ```bash
-# Desde la raiz del proyecto (donde esta docker-compose.yml)
+ssh -i "su-clave.pem" ubuntu@<IP-PUBLICA-DE-SU-EC2>
+```
+
+Reemplazar `su-clave.pem` con el nombre real del archivo de clave y `<IP-PUBLICA-DE-SU-EC2>` con la IP que aparece en la consola de AWS.
+
+Si es la primera vez y reciben un aviso de permisos del archivo `.pem`, ejecuten primero:
+
+```bash
+chmod 400 su-clave.pem
+```
+
+---
+
+### Paso 3 — Instalar Docker en EC2 (solo la primera vez)
+
+Si Docker no esta instalado en la instancia, ejecuten estos comandos uno por uno:
+
+```bash
+# Actualizar la lista de paquetes
+sudo apt update
+
+# Instalar Docker
+sudo apt install -y docker.io
+
+# Instalar Docker Compose (plugin moderno)
+sudo apt install -y docker-compose-plugin
+
+# Dar permiso al usuario ubuntu para usar Docker sin sudo
+sudo usermod -aG docker ubuntu
+
+# Aplicar el permiso sin cerrar sesion
+newgrp docker
+```
+
+Verificar que Docker quedo instalado correctamente:
+
+```bash
+docker --version
+docker compose version
+```
+
+Deben ver algo como `Docker version 24.x.x` y `Docker Compose version v2.x.x`.
+
+---
+
+### Paso 4 — Clonar el repositorio en EC2
+
+```bash
+# Ir a la carpeta home del usuario
+cd ~
+
+# Clonar el proyecto
+git clone https://github.com/ProfeMike-sudo/tienda-demo.git
+
+# Entrar a la carpeta del proyecto
+cd tienda-demo
+```
+
+Verificar que los archivos estan:
+
+```bash
+ls
+```
+
+Deben ver: `docker-compose.yml`, `ms-productos/`, `ms-pedidos/`, `README.md`.
+
+---
+
+### Paso 5 — Levantar todos los contenedores
+
+```bash
 docker compose up -d --build
 ```
 
-Docker construye las imagenes, levanta las bases de datos, espera a que esten saludables y luego inicia los microservicios.
+Este comando hace tres cosas en orden:
+1. **Construye** las imagenes Docker de cada microservicio (compila el codigo Java dentro del contenedor)
+2. **Levanta** las bases de datos MySQL y espera a que esten listas
+3. **Inicia** los microservicios Spring Boot
 
-### Verificar que todo esta corriendo
+La primera vez puede demorar 3 a 5 minutos porque descarga las imagenes base de Java y MySQL.
+
+---
+
+### Paso 6 — Verificar que todo esta corriendo
 
 ```bash
 docker ps
 ```
 
-Deben aparecer 4 contenedores en estado `Up`: `db-productos`, `db-pedidos`, `ms-productos`, `ms-pedidos`.
+Deben aparecer exactamente 4 contenedores en estado `Up`:
+
+```
+CONTAINER ID   IMAGE              STATUS          PORTS
+xxxx           tienda-demo-ms-pedidos    Up 30s    0.0.0.0:8082->8082/tcp
+xxxx           tienda-demo-ms-productos  Up 45s    0.0.0.0:8081->8081/tcp
+xxxx           mysql:8.0          Up 1m           3306/tcp
+xxxx           mysql:8.0          Up 1m           3306/tcp
+```
+
+Si algun contenedor no aparece o esta en estado `Exited`, ver el paso de solucion de problemas al final de esta seccion.
+
+---
+
+### Paso 7 — Probar desde Postman
+
+Con los contenedores corriendo, abrir Postman en su computador y hacer una peticion usando la **IP publica de la EC2** (no localhost):
+
+```
+GET http://<IP-PUBLICA-DE-SU-EC2>:8081/api/productos
+```
+
+Si responde con `[]` (lista vacia) o con productos, el sistema esta funcionando correctamente.
+
+Para crear un producto de prueba:
+
+```
+POST http://<IP-PUBLICA-DE-SU-EC2>:8081/api/productos
+Content-Type: application/json
+
+{
+  "nombre": "Notebook Lenovo",
+  "descripcion": "Notebook 15 pulgadas, 16GB RAM",
+  "precio": 599990.00,
+  "stock": 10
+}
+```
+
+Luego crear un pedido (reemplazar `1` con el id del producto recien creado):
+
+```
+POST http://<IP-PUBLICA-DE-SU-EC2>:8082/api/pedidos
+Content-Type: application/json
+
+{
+  "productoId": 1,
+  "cantidad": 2
+}
+```
+
+La respuesta debe incluir `nombreProducto` y `total`, lo que confirma que `ms-pedidos` llamo correctamente a `ms-productos`.
+
+---
 
 ### Ver los logs de un servicio
 
+Si algo no funciona como esperan, los logs muestran exactamente que paso:
+
 ```bash
+# Ver logs en tiempo real de ms-pedidos
 docker logs ms-pedidos -f
+
+# Ver logs en tiempo real de ms-productos
 docker logs ms-productos -f
+
+# Ver los ultimos 50 mensajes
+docker logs ms-pedidos --tail 50
 ```
+
+Presionar `Ctrl + C` para salir del modo de logs en tiempo real.
+
+---
 
 ### Detener sin perder datos
 
@@ -101,12 +265,43 @@ docker logs ms-productos -f
 docker compose down
 ```
 
-Los datos de las bases de datos persisten en los volumenes nombrados `vol-db-productos` y `vol-db-pedidos`.
+Los datos de las bases de datos persisten en los volumenes nombrados `vol-db-productos` y `vol-db-pedidos`. Pueden volver a levantar el sistema con `docker compose up -d` y los datos siguen ahi.
+
+---
 
 ### Detener y eliminar todo (incluyendo datos)
 
 ```bash
 docker compose down -v
+```
+
+Usar esto solo si quieren empezar desde cero. Elimina los contenedores y los volumenes con todos los datos.
+
+---
+
+### Solucion de problemas frecuentes
+
+**Un contenedor aparece como `Exited` en `docker ps`:**
+```bash
+# Ver el error del contenedor que fallo
+docker logs <nombre-del-contenedor>
+```
+El error mas frecuente es que la base de datos no termino de iniciar. Esperen 30 segundos y vuelvan a ejecutar `docker compose up -d`.
+
+**Error "port is already allocated":**
+```bash
+# Ver que proceso esta usando el puerto
+sudo lsof -i :8081
+# Detener el proceso o cambiar el puerto en docker-compose.yml
+```
+
+**Postman dice "Could not get any response":**
+Verificar que el Security Group tiene el puerto abierto (Paso 1) y que estan usando la IP publica de la EC2, no `localhost`.
+
+**Error "permission denied" al usar docker:**
+```bash
+sudo usermod -aG docker ubuntu
+newgrp docker
 ```
 
 ---
